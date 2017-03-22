@@ -46,6 +46,6 @@ shinyUI(fluidPage(
     repository."),
   a(href="http://www.aclweb.org/anthology/D07-1090.pdf", "Link to description of algorithm."),
   br(),
-  a(href="", "Link to code on github.")
+  a(href="https://github.com/tcbegley/swiftkey_capstone", "Link to code on github.")
   
 ))
