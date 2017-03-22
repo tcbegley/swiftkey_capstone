@@ -1,0 +1,221 @@
+---
+title: "Swiftkey Capstone - Milestone Report"
+author: "Tom Begley"
+date: "16/02/2017"
+output: html_document
+---
+
+### Summary
+
+This report forms part of my work on the Coursera Data Science Capstone. The ultimate goal is to build a prediction algorithm that can predict the next word a user will type given what they have typed so far. In order to be useful, we need to find the right balance between speed and accuracy. Indeed, for prediction to be useful and to save typing time, the prediction needs to be near instant. Predicting the next word after a 30 second delay is no good. On the other hand, we want to get sensible predictions. The application will also not be useful if it just guesses the next word at random. Therefore throughout the project it will be important to keep in mind these somewhat conflicting goals. How can we build a good prediction algorithm while not coming up with a model so complex that the running time becomes impractical.
+
+This particular report will focus on the preliminary exploratory analysis I have performed on the data set, and summarise some of my thoughts on how it might be possible to build a good prediction algorithm. The data has been provided by Swiftkey, and can be downloaded from the links provided in the code chunks below.
+
+### Getting the data
+
+We download the data from the link provided if it is not already present in the working directory.
+
+```{r, message=FALSE}
+url <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+
+if(!file.exists("Coursera-Swiftkey.zip")){
+    download.file(url, "Coursera-Swiftkey.zip", method="curl")
+}
+if(!file.exists("final")) {
+    files <- c("final/en_US/en_US.blogs.txt", "final/en_US/en_US.news.txt", "final/en_US/en_US.twitter.txt")
+    unzip("Coursera-SwiftKey.zip", files=files)
+}
+```
+
+The data has been scraped from three sources, twitter, blogs and news. We load these separately.
+
+```{r, message=FALSE, cache=TRUE}
+en_blog <- readLines("final/en_US/en_US.blogs.txt", skipNul = TRUE)
+en_news <- readLines("final/en_US/en_US.news.txt", skipNul = TRUE)
+en_twitter <- readLines("final/en_US/en_US.twitter.txt", skipNul = TRUE)
+```
+
+
+### Basic statistics
+
+We can calculate basic statistics about the data, such as file size, number of lines and  number of words.
+
+```{r, cache=TRUE}
+#calculate file size
+blog_size <- file.size("final/en_US/en_US.blogs.txt")
+news_size <- file.size("final/en_US/en_US.news.txt")
+twitter_size <- file.size("final/en_US/en_US.twitter.txt")
+sizes <- c(blog_size, news_size, twitter_size)
+
+blog_length <- length(en_blog)
+news_length <- length(en_news)
+twitter_length <- length(en_twitter)
+lengths <- c(blog_length, news_length, twitter_length)
+
+blog_words <- sum(sapply(gregexpr("[[:alpha:]]+", en_blog), function(x) sum(x > 0)))
+news_words <- sum(sapply(gregexpr("[[:alpha:]]+", en_news), function(x) sum(x > 0)))
+twitter_words <- sum(sapply(gregexpr("[[:alpha:]]+", en_twitter), function(x) sum(x > 0)))
+words <- c(blog_words, news_words, twitter_words)
+```
+
+```{r, echo=FALSE, message=FALSE}
+library(dplyr)
+stats <- data.frame(Name = c("en_US.blogs", "en_US.news", "en_US.twitter"),
+                    Size_MB = c(blog_size, news_size, twitter_size)/2^20,
+                    Length = c(blog_length, news_length, twitter_length),
+                    Words = c(blog_words, news_words, twitter_words))
+stats <- mutate(stats, Mean_words = Words/Length)
+stats
+```
+
+### Cleaning the data
+
+The data files are so large that R takes a long time to load the data and to iterate over entries. This will be impractical if we want to build a fast prediction algorithm, so it's necessary to extract a sample from the data. We do this by discarding 99% of the data at random. 
+
+```{r, message=FALSE, cache=TRUE}
+set.seed(3333)
+data <- c(sample(en_blog, blog_length/100), 
+          sample(en_news, news_length/100), 
+          sample(en_twitter, twitter_length/100))
+```
+
+Having constructed a data set we proceed to clean the data by converting all words to lower case, removing special characters and urls. We do this using the `tm` library in R.
+
+```{r, message=FALSE, cache=TRUE}
+library(tm)
+
+data <- VCorpus(VectorSource(data))
+
+### cleaning data ###
+# convert to lower case
+data <- tm_map(data, content_transformer(tolower))
+
+#remove urls and twitter handles
+data <- tm_map(data, content_transformer(function(x) gsub("http[[:alnum:][:punct:]]*", "", x)))
+data <- tm_map(data, content_transformer(function(x) gsub("@[:alnum:]+", "", x)))
+
+#remove numbers and punctuation
+data <- tm_map(data, removePunctuation)
+data <- tm_map(data, removeNumbers)
+
+# eliminate extra whitespace
+data <- tm_map(data, stripWhitespace)
+```
+
+### Exploratory Analysis
+
+Given the clean data, we can start to conduct an exploratory analysis. Our plan is to look at n-grams, that is sequences of n words appearing in order in our data. The predictive model will ultimately be based on the idea that if we observe the first n-1 words of a common n-gram, then the final word of that n-gram should be a good prediction for the next word. We use `ngram` which is part of the `NLP` package loaded by `tm`.
+
+```{r, cache=TRUE, message=FALSE}
+# function to extract bigrams
+bigramTokenizer <-
+  function(x)
+    unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)
+
+# analogous function for trigrams
+trigramTokenizer <-
+  function(x)
+    unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)
+
+tdm1 <- removeSparseTerms(TermDocumentMatrix(data), 0.999)
+tdm2 <- removeSparseTerms(TermDocumentMatrix(data, control = list(tokenize = bigramTokenizer)), 0.999)
+tdm3 <- removeSparseTerms(TermDocumentMatrix(data, control = list(tokenize = trigramTokenizer)), 0.999)
+
+count1 <- sort(rowSums(as.matrix(tdm1)), decreasing=TRUE)
+count1 <- data.frame(unigram = names(count1), freq = count1)
+count2 <- sort(rowSums(as.matrix(tdm2)), decreasing=TRUE)
+count2 <- data.frame(bigram = names(count2), freq = count2)
+count3 <- sort(rowSums(as.matrix(tdm3)), decreasing=TRUE)
+count3 <- data.frame(trigram = names(count3), freq = count3)
+
+length(data)
+```
+
+We can use `ggplot2` to plot the frequencies of the top 10 n-grams for n = 1, 2, 3
+
+```{r, cache=TRUE, message=FALSE}
+library(ggplot2)
+
+g1 <- ggplot(count1[1:10,], aes(reorder(unigram, -freq), freq)) + geom_bar(stat="identity", fill="chartreuse1") + guides(fill=FALSE)
+g1 <- g1 + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g1 <- g1 + ggtitle("Most common unigrams") + ylab("Frequency") + xlab("Unigram")
+g1
+
+g2 <- ggplot(count2[1:10,], aes(reorder(bigram, -freq), freq)) + geom_bar(stat="identity", fill="chartreuse2") + guides(fill=FALSE)
+g2 <- g2 + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g2 <- g2 + ggtitle("Most common bigrams") + ylab("Frequency") + xlab("Bigram")
+g2
+
+g3 <- ggplot(count3[1:10,], aes(reorder(trigram, -freq), freq)) + geom_bar(stat="identity", fill="chartreuse3") + guides(fill=FALSE)
+g3 <- g3 + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g3 <- g3 + ggtitle("Most common trigrams") + ylab("Frequency") + xlab("Trigram")
+g3
+```
+
+### Removing stopwords
+
+We can see the most common possibilities are dominated by common words such as 'the', 'and' and 'of'. It might be more instructive or indeed illuminating to use `tm` to remove these so called stop words and examine common ngrams that do not consist of these most common words. The code for generating the figures that follow is completely analogous to the code above.
+
+```{r, cache = TRUE, echo = FALSE, message=FALSE}
+library(tm)
+
+set.seed(3333)
+data2 <- c(sample(en_blog, blog_length/100), 
+          sample(en_news, news_length/100), 
+          sample(en_twitter, twitter_length/100))
+
+data2 <- VCorpus(VectorSource(data2))
+
+### cleaning data ###
+# convert to lower case
+data2 <- tm_map(data2, content_transformer(tolower))
+
+#remove urls and twitter handles
+data2 <- tm_map(data2, content_transformer(function(x) gsub("http[[:alnum:][:punct:]]*", "", x)))
+data2 <- tm_map(data2, content_transformer(function(x) gsub("@[:alnum:]+", "", x)))
+
+# remove stopwords
+data2 <- tm_map(data2, removeWords, stopwords("en"))
+
+#remove numbers and punctuation
+data2 <- tm_map(data2, removePunctuation)
+data2 <- tm_map(data2, removeNumbers)
+
+# eliminate extra whitespace
+data2 <- tm_map(data2, stripWhitespace)
+
+tdm4 <- removeSparseTerms(TermDocumentMatrix(data2), 0.999)
+tdm5 <- removeSparseTerms(TermDocumentMatrix(data2, control = list(tokenize = bigramTokenizer)), 0.999)
+tdm6 <- removeSparseTerms(TermDocumentMatrix(data2, control = list(tokenize = trigramTokenizer)), 0.9999)
+
+count4 <- sort(rowSums(as.matrix(tdm4)), decreasing=TRUE)
+count4 <- data.frame(unigram = names(count4), freq = count4)
+count5 <- sort(rowSums(as.matrix(tdm5)), decreasing=TRUE)
+count5 <- data.frame(bigram = names(count5), freq = count5)
+count6 <- sort(rowSums(as.matrix(tdm6)), decreasing=TRUE)
+count6 <- data.frame(trigram = names(count6), freq = count6)
+```
+
+```{r, cache=TRUE, echo = FALSE, message=FALSE}
+library(ggplot2)
+
+g4 <- ggplot(count4[1:10,], aes(reorder(unigram, -freq), freq)) + geom_bar(stat="identity", fill="chartreuse1") + guides(fill=FALSE)
+g4 <- g4 + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g4 <- g4 + ggtitle("Most common unigrams") + ylab("Frequency") + xlab("Unigram")
+g4
+
+g5 <- ggplot(count5[1:10,], aes(reorder(bigram, -freq), freq)) + geom_bar(stat="identity", fill="chartreuse2") + guides(fill=FALSE)
+g5 <- g5 + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g5 <- g5 + ggtitle("Most common bigrams") + ylab("Frequency") + xlab("Bigram")
+g5
+
+g6 <- ggplot(count6[1:10,], aes(reorder(trigram, -freq), freq)) + geom_bar(stat="identity", fill="chartreuse3") + guides(fill=FALSE)
+g6 <- g6 + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+g6 <- g6 + ggtitle("Most common trigrams") + ylab("Frequency") + xlab("Trigram")
+g6
+```
+
+
+### Early thoughts on the model
+
+These n-grams formed from less common words show a bit more structure in the data. My plan is to use common n-grams to predict the next word. If for example the user types two words which match the first two words of one or more trigrams that appear in the data set, then I will predict the final word of the most common of the matching trigrams. If the two typed words don't match any known trigrams I will check if the final word matches the first word of any of the observed bigrams and predict the next word according to the most common of all the matches. Finally if there are no matching trigrams or bigrams then I will predict according to the most common unigrams. Exactly how to do this efficiently will be the focus of the rest of the project.
